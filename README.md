@@ -1,7 +1,7 @@
-# 📊 Automatizador de Reportes de Asistencia - Global
+# 📊 Automatizador de Reportes de Asistencia
 
 Esta aplicación web, desarrollada con **Streamlit**, está diseñada para transformar registros biométricos crudos (archivos `.dat`) en reportes de asistencia consolidados, precisos y listos para la toma de decisiones. 
-
+El archivo .dat es extraido de un aparato de registro biométrico ZKTeco
 El sistema automatiza el preprocesamiento, la clasificación por turnos, el redondeo de horarios y el cálculo de horas trabajadas, exportando un archivo Excel con formato profesional.
 
 ## 🚀 Funcionalidades Principales
