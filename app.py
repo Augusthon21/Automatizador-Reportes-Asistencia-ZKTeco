@@ -247,7 +247,7 @@ def formatear_timedelta(td):
 archivo = st.file_uploader("Carga el archivo .dat aquí", type=["dat", "txt"])
 
 if archivo:
-    df = pd.read_csv(archivo, sep = "\t", header = None, names=columnas)
+    df = pd.read_csv(archivo, sep = "\t", header = None, names=columnas, encoding='latin-1')
     df = df[["id_usuario", "fecha_hora"]]
     df["id_usuario"] = df["id_usuario"].astype(str)
 
