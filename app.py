@@ -6,6 +6,8 @@ import numpy as np
 from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import io
+import msoffcrypto
 
 #Streamlit
 st.set_page_config(page_title="Apps Control de Asistencia",page_icon="logo_g.png", layout="wide")
@@ -101,6 +103,13 @@ columnas_finales = [
 cols_hora = ['D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P']
 
 columnas = ["id_usuario", "fecha_hora", "col1", "col2", "col3", "col4"]
+
+columnas_changes = [
+    'ID de persona', 'id_usuario', 'Departamento', 'Tipo',
+    'Fuente', 'fecha_hora', 'Zona horaria', 'Modo de verificación',
+    'Fichaje móvil', 'Dispositivo SN', 'Nombre del dispositivo',
+    'Hora de carga'
+]
 
 #Definicion de funciones
 
@@ -244,199 +253,261 @@ def formatear_timedelta(td):
     return f"{horas:02}:{minutos:02}:{segundos:02}"
 
 #streamlit
-archivo = st.file_uploader("Carga el archivo .dat aquí", type=["dat", "txt"])
+# --- INICIO DE LA PRE-PÁGINA ---
+if 'modo_reporte' not in st.session_state:
+    st.session_state.modo_reporte = None
 
-if archivo:
-    df = pd.read_csv(archivo, sep = "\t", header = None, names=columnas, encoding='latin-1')
-    df = df[["id_usuario", "fecha_hora"]]
-    df["id_usuario"] = df["id_usuario"].astype(str)
+if st.session_state.modo_reporte is None:
+    # Pantalla inicial de selección
+    st.subheader("Seleccione el Tipo de Reporte")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📊 Reporte Tradicional (.dat)", use_container_width=True):
+            st.session_state.modo_reporte = "tradicional"
+            st.rerun()
+    with col2:
+        if st.button("🚀 Reporte Nuevo (.csv cifrado)", use_container_width=True):
+            st.session_state.modo_reporte = "nuevo"
+            st.rerun()
+else:
+    # Mostrar el botón para volver atrás
+    if st.button("⬅️ Volver a selección de reporte"):
+        st.session_state.modo_reporte = None
+        st.rerun()
 
-    with st.sidebar:
-        st.header("Configuración del Reporte")
-        nombre_personal = st.text_input("Nombre del Personal", value=None)
-        
-        usuarios_unicos = sorted(df["id_usuario"].unique(), key=lambda x: int(x) if x.isdigit() else 0)
-        id_buscar = st.selectbox("Selecciona ID de Usuario", usuarios_unicos)
-        
-        col_f1, col_f2 = st.columns(2)
-        fecha_inicio = col_f1.date_input("Fecha Inicio", value="today")
-        fecha_final = col_f2.date_input("Fecha Final", value="today")
-        fecha_inicio = pd.Timestamp(fecha_inicio)
-        fecha_final = pd.Timestamp(fecha_final) + timedelta(days=1)
-        rango_completo = pd.date_range(start=fecha_inicio, end=fecha_final, freq='D')
+    # Dependiendo de la selección, mostramos un uploader u otro
+    if st.session_state.modo_reporte == "tradicional":
+        st.markdown("### 📊 Cargando: Reporte Tradicional")
+        archivo = st.file_uploader("Carga el archivo .dat o .txt aquí", type=["dat", "txt"])
+    else:
+        st.markdown("### 🚀 Cargando: Reporte Nuevo")
+        archivo = st.file_uploader("Carga el archivo .csv cifrado aquí", type=["csv"])
 
-    if st.button("🚀 Generar Reporte"):
-        with st.spinner("Procesando datos..."):
-
-            df["fecha_hora"] = pd.to_datetime(df["fecha_hora"])
-            df_id = df.loc[df["id_usuario"] == id_buscar].copy()
-
-            df_filtrado = df_id[df_id["fecha_hora"].between(fecha_inicio, fecha_final)].copy()
-            df_filtrado["fecha_hora"] = df_filtrado["fecha_hora"].dt.floor("min")
-            df_filtrado["fecha"] = df_filtrado["fecha_hora"].dt.date
-            df_filtrado["hora"] = df_filtrado["fecha_hora"].dt.time
-
-            df_filtrado["categoria"] = df_filtrado.apply(clasificar_marcacion, axis=1).copy()
-            df_clasificado = df_filtrado.dropna(subset=["categoria"]).copy()
-
-            df_resultado_fase2 = df_clasificado.pivot_table(
-                index="fecha",
-                columns="categoria",
-                values="fecha_hora",
-                aggfunc="min"
-            )
-
-            df_resultado_fase2 = df_resultado_fase2.reindex(columns=columnas_esperadas)
-
-            df_imputado = df_resultado_fase2.reindex(rango_completo)
-            df_imputado.index.name = "fecha"
-
-            df_final_fase2 = df_imputado.apply(rellenar_vacios, axis=1)
-
-            df_inicial = df_imputado.copy()
-            df_inicial.columns = ['entrada_mañana', 'salida_mañana', 'entrada_tarde', 'salida_tarde']
-
-            cols_redondeo = df_final_fase2.apply(aplicar_redondeo, axis=1)
-            df_final_fase3 = pd.concat([df_inicial, df_final_fase2, cols_redondeo], axis=1)
-
-            df_final_fase3["sucio_total_horas_mañana"] = df_final_fase3["sucio_salida_mañana"] - df_final_fase3["sucio_entrada_mañana"]
-            df_final_fase3["sucio_total_horas_tarde"] = df_final_fase3["sucio_salida_tarde"] - df_final_fase3["sucio_entrada_tarde"]
-
-            df_final_fase3["redondeo_total_horas_mañana"] = df_final_fase3["redondeo_salida_mañana"] - df_final_fase3["redondeo_entrada_mañana"]
-            df_final_fase3["redondeo_total_horas_tarde"] = df_final_fase3["redondeo_salida_tarde"] - df_final_fase3["redondeo_entrada_tarde"]
-
-            for col in cols_totales:
-                df_final_fase3[col] = df_final_fase3[col].apply(timedelta_a_decimal)
-
-            df_calculado = df_final_fase3.copy()
-
-            diferencia = df_final_fase3["sucio_salida_mañana"] - df_final_fase3["sucio_entrada_mañana"]
-            df_final_fase3["sucio_total_horas_mañana_hms"] = diferencia.apply(formatear_timedelta)
-
-            diferencia = df_final_fase3["sucio_salida_tarde"] - df_final_fase3["sucio_entrada_tarde"]
-            df_final_fase3["sucio_total_horas_tarde_hms"] = diferencia.apply(formatear_timedelta)
-
-            diferencia = df_final_fase3["redondeo_salida_mañana"] - df_final_fase3["redondeo_entrada_mañana"]
-            df_final_fase3["redondeo_total_horas_mañana_hms"] = diferencia.apply(formatear_timedelta)
-
-            diferencia = df_final_fase3["redondeo_salida_tarde"] - df_final_fase3["redondeo_entrada_tarde"]
-            df_final_fase3["redondeo_total_horas_tarde_hms"] = diferencia.apply(formatear_timedelta)
-
-            df_final_fase3["dia_semana"] = df_final_fase3.index.dayofweek
-
-            df_final_fase3["nombre_dia"] = df_final_fase3["dia_semana"].map(nombres_dias)
-
-            condiciones = [
-                (df_final_fase3["dia_semana"] < 5),  
-                (df_final_fase3["dia_semana"] == 5), 
-                (df_final_fase3["dia_semana"] == 6)  
-            ]
-
-            df_final_fase3["horas_requeridas"] = np.select(condiciones, valores, default="00:00:00")
-
-            #Parentesis
-            df_filtrado["hora_texto"] = df_filtrado["fecha_hora"].dt.strftime('%H:%M:%S')
-
-            columna_bruta = df_filtrado.groupby("fecha")["hora_texto"].apply(lambda x: ", ".join(x))
-
-            columna_bruta.name = "registros_bruto"
-
-            if "registros_bruto" in df_final_fase3.columns:
-                df_final_fase3 = df_final_fase3.drop(columns=["registros_bruto"])
-
-            df_final_fase3 = df_final_fase3.join(columna_bruta)
-
-            df_reporte = df_final_fase3[columnas_finales].copy()
-            df_reporte = df_reporte.iloc[:-1,:].copy()
-
-            for col in cols_tiempo:
-                if col in df_reporte.columns:
-
-                    df_reporte[col] = pd.to_datetime(df_reporte[col])
-                    df_reporte[col] = df_reporte[col].dt.strftime('%H:%M')
-
-            for col in cols_totales_texto:
-                if col in df_reporte.columns:
-
-                    df_reporte[col] = df_reporte[col].astype(str).str[:5]
-
-                    df_reporte[col] = df_reporte[col].replace("nan", "")
-                    df_reporte[col] = df_reporte[col].replace("None", "")
-
-
-            # Estilos
-            output= BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_reporte.to_excel(writer, sheet_name="Asistencia_Detallada")
-
-            #nombre_archivo = f"{nombre_personal}_{fecha_final}_reporte_asistencia.xlsx"
-            #df_reporte.to_excel(nombre_archivo, sheet_name="Asistencia_Detallada")
-            output.seek(0)
-            #Formateo
-            wb = load_workbook(output)
-            ws = wb.active 
-
-            header_font = Font(bold=True, color="FFFFFF", size=11)
-            header_align = Alignment(horizontal="center", vertical="center")
-            thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
-                                top=Side(style='thin'), bottom=Side(style='thin'))
-            weekend_fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
-
-            fill_azul = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")    # A, B, C, P
-            fill_verde = PatternFill(start_color="375623", end_color="375623", fill_type="solid")   # D, E, F, G
-            fill_naranja = PatternFill(start_color="843C0C", end_color="843C0C", fill_type="solid") # H, I, J, K
-            fill_gris = PatternFill(start_color="3B3838", end_color="3B3838", fill_type="solid")    # L, M
-            fill_morado = PatternFill(start_color="3F3F76", end_color="3F3F76", fill_type="solid")  # N, O
-
-            for cell in ws[1]:
-                letra = cell.column_letter
-                cell.font = header_font
-                cell.alignment = header_align
-                cell.border = thin_border
+    if archivo:
+        # Lógica dividida de lectura
+        if st.session_state.modo_reporte == "tradicional":
+            df = pd.read_csv(archivo, sep="\t", header=None, names=columnas, encoding='latin-1')
+            
+        else:
+            # Lógica para "Reporte Nuevo" con desencriptación
+            archivo_desencriptado = io.BytesIO()
+            contrasenia = "123456"
+            
+            try:
+                # El "archivo" de Streamlit se pasa directo a msoffcrypto
+                office_file = msoffcrypto.OfficeFile(archivo)
+                office_file.load_key(password=contrasenia)
+                office_file.decrypt(archivo_desencriptado)
+                archivo_desencriptado.seek(0)
                 
-                if letra in ['A', 'B', 'C', 'P']:
-                    cell.fill = fill_azul
-                elif letra in ['D', 'E', 'F', 'G']:
-                    cell.fill = fill_verde
-                elif letra in ['H', 'I', 'J', 'K']:
-                    cell.fill = fill_naranja
-                elif letra in ['L', 'M']:
-                    cell.fill = fill_gris
-                elif letra in ['N', 'O']:
-                    cell.fill = fill_morado
+                try:
+                    df = pd.read_excel(archivo_desencriptado, header=1)
+                except Exception:
+                    archivo_desencriptado.seek(0)
+                    df = pd.read_csv(archivo_desencriptado, header=1)
+                
+                # Asignamos las nuevas columnas
+                df.columns = columnas_changes
+                
+            except Exception as e:
+                st.error(f"Error al desencriptar el archivo nuevo: {e}")
+                st.stop()
+        
+        # --- A PARTIR DE AQUÍ EL RESTO DEL APP.PY QUEDA IGUAL ---
+        # Filtramos para quedarnos con las 2 columnas que requiere tu lógica original
+        df = df[["id_usuario", "fecha_hora"]]
+        df["id_usuario"] = df["id_usuario"].astype(str)
 
-            for col in ws.columns:
-                letra_columna = col[0].column_letter
-                ws.column_dimensions[letra_columna].width = 18
+        with st.sidebar:
+# --- FIN DE LA EDICIÓN ---
 
-                for cell in col:
-                    if cell.row == 1:
-                        continue
-                        
+            st.header("Configuración del Reporte")
+            nombre_personal = st.text_input("Nombre del Personal", value=None)
+            
+            usuarios_unicos = sorted(df["id_usuario"].unique(),
+                                     key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x))
+)
+            id_buscar = st.selectbox("Selecciona ID de Usuario", usuarios_unicos)
+            
+            col_f1, col_f2 = st.columns(2)
+            fecha_inicio = col_f1.date_input("Fecha Inicio", value="today")
+            fecha_final = col_f2.date_input("Fecha Final", value="today")
+            fecha_inicio = pd.Timestamp(fecha_inicio)
+            fecha_final = pd.Timestamp(fecha_final) + timedelta(days=1)
+            rango_completo = pd.date_range(start=fecha_inicio, end=fecha_final, freq='D')
+
+        if st.button("🚀 Generar Reporte"):
+            with st.spinner("Procesando datos..."):
+
+                df["fecha_hora"] = pd.to_datetime(df["fecha_hora"])
+                df_id = df.loc[df["id_usuario"] == id_buscar].copy()
+
+                df_filtrado = df_id[df_id["fecha_hora"].between(fecha_inicio, fecha_final)].copy()
+                df_filtrado["fecha_hora"] = df_filtrado["fecha_hora"].dt.floor("min")
+                df_filtrado["fecha"] = df_filtrado["fecha_hora"].dt.date
+                df_filtrado["hora"] = df_filtrado["fecha_hora"].dt.time
+
+                df_filtrado["categoria"] = df_filtrado.apply(clasificar_marcacion, axis=1).copy()
+                df_clasificado = df_filtrado.dropna(subset=["categoria"]).copy()
+
+                df_resultado_fase2 = df_clasificado.pivot_table(
+                    index="fecha",
+                    columns="categoria",
+                    values="fecha_hora",
+                    aggfunc="min"
+                )
+
+                df_resultado_fase2 = df_resultado_fase2.reindex(columns=columnas_esperadas)
+
+                df_imputado = df_resultado_fase2.reindex(rango_completo)
+                df_imputado.index.name = "fecha"
+
+                df_final_fase2 = df_imputado.apply(rellenar_vacios, axis=1)
+
+                df_inicial = df_imputado.copy()
+                df_inicial.columns = ['entrada_mañana', 'salida_mañana', 'entrada_tarde', 'salida_tarde']
+
+                cols_redondeo = df_final_fase2.apply(aplicar_redondeo, axis=1)
+                df_final_fase3 = pd.concat([df_inicial, df_final_fase2, cols_redondeo], axis=1)
+
+                df_final_fase3["sucio_total_horas_mañana"] = df_final_fase3["sucio_salida_mañana"] - df_final_fase3["sucio_entrada_mañana"]
+                df_final_fase3["sucio_total_horas_tarde"] = df_final_fase3["sucio_salida_tarde"] - df_final_fase3["sucio_entrada_tarde"]
+
+                df_final_fase3["redondeo_total_horas_mañana"] = df_final_fase3["redondeo_salida_mañana"] - df_final_fase3["redondeo_entrada_mañana"]
+                df_final_fase3["redondeo_total_horas_tarde"] = df_final_fase3["redondeo_salida_tarde"] - df_final_fase3["redondeo_entrada_tarde"]
+
+                for col in cols_totales:
+                    df_final_fase3[col] = df_final_fase3[col].apply(timedelta_a_decimal)
+
+                df_calculado = df_final_fase3.copy()
+
+                diferencia = df_final_fase3["sucio_salida_mañana"] - df_final_fase3["sucio_entrada_mañana"]
+                df_final_fase3["sucio_total_horas_mañana_hms"] = diferencia.apply(formatear_timedelta)
+
+                diferencia = df_final_fase3["sucio_salida_tarde"] - df_final_fase3["sucio_entrada_tarde"]
+                df_final_fase3["sucio_total_horas_tarde_hms"] = diferencia.apply(formatear_timedelta)
+
+                diferencia = df_final_fase3["redondeo_salida_mañana"] - df_final_fase3["redondeo_entrada_mañana"]
+                df_final_fase3["redondeo_total_horas_mañana_hms"] = diferencia.apply(formatear_timedelta)
+
+                diferencia = df_final_fase3["redondeo_salida_tarde"] - df_final_fase3["redondeo_entrada_tarde"]
+                df_final_fase3["redondeo_total_horas_tarde_hms"] = diferencia.apply(formatear_timedelta)
+
+                df_final_fase3["dia_semana"] = df_final_fase3.index.dayofweek
+
+                df_final_fase3["nombre_dia"] = df_final_fase3["dia_semana"].map(nombres_dias)
+
+                condiciones = [
+                    (df_final_fase3["dia_semana"] < 5),  
+                    (df_final_fase3["dia_semana"] == 5), 
+                    (df_final_fase3["dia_semana"] == 6)  
+                ]
+
+                df_final_fase3["horas_requeridas"] = np.select(condiciones, valores, default="00:00:00")
+
+                #Parentesis
+                df_filtrado["hora_texto"] = df_filtrado["fecha_hora"].dt.strftime('%H:%M:%S')
+
+                columna_bruta = df_filtrado.groupby("fecha")["hora_texto"].apply(lambda x: ", ".join(x))
+
+                columna_bruta.name = "registros_bruto"
+
+                if "registros_bruto" in df_final_fase3.columns:
+                    df_final_fase3 = df_final_fase3.drop(columns=["registros_bruto"])
+
+                df_final_fase3 = df_final_fase3.join(columna_bruta)
+
+                df_reporte = df_final_fase3[columnas_finales].copy()
+                df_reporte = df_reporte.iloc[:-1,:].copy()
+
+                for col in cols_tiempo:
+                    if col in df_reporte.columns:
+
+                        df_reporte[col] = pd.to_datetime(df_reporte[col])
+                        df_reporte[col] = df_reporte[col].dt.strftime('%H:%M')
+
+                for col in cols_totales_texto:
+                    if col in df_reporte.columns:
+
+                        df_reporte[col] = df_reporte[col].astype(str).str[:5]
+
+                        df_reporte[col] = df_reporte[col].replace("nan", "")
+                        df_reporte[col] = df_reporte[col].replace("None", "")
+
+
+                # Estilos
+                output= BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_reporte.to_excel(writer, sheet_name="Asistencia_Detallada")
+
+                #nombre_archivo = f"{nombre_personal}_{fecha_final}_reporte_asistencia.xlsx"
+                #df_reporte.to_excel(nombre_archivo, sheet_name="Asistencia_Detallada")
+                output.seek(0)
+                #Formateo
+                wb = load_workbook(output)
+                ws = wb.active 
+
+                header_font = Font(bold=True, color="FFFFFF", size=11)
+                header_align = Alignment(horizontal="center", vertical="center")
+                thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), 
+                                    top=Side(style='thin'), bottom=Side(style='thin'))
+                weekend_fill = PatternFill(start_color="E7E6E6", end_color="E7E6E6", fill_type="solid")
+
+                fill_azul = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")    # A, B, C, P
+                fill_verde = PatternFill(start_color="375623", end_color="375623", fill_type="solid")   # D, E, F, G
+                fill_naranja = PatternFill(start_color="843C0C", end_color="843C0C", fill_type="solid") # H, I, J, K
+                fill_gris = PatternFill(start_color="3B3838", end_color="3B3838", fill_type="solid")    # L, M
+                fill_morado = PatternFill(start_color="3F3F76", end_color="3F3F76", fill_type="solid")  # N, O
+
+                for cell in ws[1]:
+                    letra = cell.column_letter
+                    cell.font = header_font
+                    cell.alignment = header_align
                     cell.border = thin_border
                     
-                    if letra_columna == 'A':
-                        cell.number_format = 'DD/MM/YYYY' # Cambia "31/01/2026 00:00:00" a "31/01/2026"
-                        cell.alignment = Alignment(horizontal="center")
+                    if letra in ['A', 'B', 'C', 'P']:
+                        cell.fill = fill_azul
+                    elif letra in ['D', 'E', 'F', 'G']:
+                        cell.fill = fill_verde
+                    elif letra in ['H', 'I', 'J', 'K']:
+                        cell.fill = fill_naranja
+                    elif letra in ['L', 'M']:
+                        cell.fill = fill_gris
+                    elif letra in ['N', 'O']:
+                        cell.fill = fill_morado
+
+                for col in ws.columns:
+                    letra_columna = col[0].column_letter
+                    ws.column_dimensions[letra_columna].width = 18
+
+                    for cell in col:
+                        if cell.row == 1:
+                            continue
+                            
+                        cell.border = thin_border
+                        
+                        if letra_columna == 'A':
+                            cell.number_format = 'DD/MM/YYYY' # Cambia "31/01/2026 00:00:00" a "31/01/2026"
+                            cell.alignment = Alignment(horizontal="center")
+                        
+                        if letra_columna in cols_hora:
+                            cell.number_format = 'HH:MM:SS'
+                            cell.alignment = Alignment(horizontal="center")
+
+                for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                    celda_dia = row[2] # Columna C
                     
-                    if letra_columna in cols_hora:
-                        cell.number_format = 'HH:MM:SS'
-                        cell.alignment = Alignment(horizontal="center")
-
-            for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                celda_dia = row[2] # Columna C
+                    if celda_dia.value == "Sábado" or celda_dia.value == "Domingo":
+                        for cell in row[0:3]: # Solo Columnas A, B y C
+                            cell.fill = weekend_fill
                 
-                if celda_dia.value == "Sábado" or celda_dia.value == "Domingo":
-                    for cell in row[0:3]: # Solo Columnas A, B y C
-                        cell.fill = weekend_fill
-            
-            final_excell = BytesIO()
-            wb.save(final_excell)
+                final_excell = BytesIO()
+                wb.save(final_excell)
 
-            st.success(f"¡Reporte procesado con éxito! Nombre: {nombre_personal} ID: {id_buscar}")
-            st.download_button(
-                label="📥 Descargar Reporte en Excel",
-                data=final_excell.getvalue(),
-                file_name=f"{nombre_personal}_{fecha_final}_asistencia.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                st.success(f"¡Reporte procesado con éxito! Nombre: {nombre_personal} ID: {id_buscar}")
+                st.download_button(
+                    label="📥 Descargar Reporte en Excel",
+                    data=final_excell.getvalue(),
+                    file_name=f"{nombre_personal}_{fecha_final}_asistencia.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
